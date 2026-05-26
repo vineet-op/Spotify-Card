@@ -24,3 +24,22 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@keyframes song-marquee {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+.song-marquee-track--active {
+  animation: song-marquee 12s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .song-marquee-track--active {
+    animation: none;
+  }
+}

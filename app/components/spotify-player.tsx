@@ -14,7 +14,7 @@ import {
   SkipBack,
   SkipForwardIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 const SONG = {
   title: "Tell Me",
@@ -73,27 +73,36 @@ function SpotifyIcon({ className }: { className?: string }) {
 function SongMarquee({ text }: { text: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
-  const [shouldScroll, setShouldScroll] = useState(false);
+  /** Start true so CSS scroll runs on first paint; layout effect turns off if text fits */
+  const [shouldScroll, setShouldScroll] = useState(true);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = containerRef.current;
     const measure = measureRef.current;
     if (!container || !measure) return;
 
     const check = () => {
-      setShouldScroll(measure.offsetWidth > container.clientWidth);
+      const containerWidth = container.clientWidth;
+      if (containerWidth === 0) return;
+      setShouldScroll(measure.scrollWidth > containerWidth);
     };
 
     check();
+    requestAnimationFrame(check);
+
     const observer = new ResizeObserver(check);
     observer.observe(container);
+    observer.observe(measure);
+
+    void document.fonts?.ready.then(check);
+
     return () => observer.disconnect();
   }, [text]);
 
   return (
     <div
       ref={containerRef}
-      className={`relative h-5 w-full overflow-hidden ${MARQUEE_MASK}`}
+      className={`relative isolate h-5 w-full overflow-hidden ${MARQUEE_MASK}`}
     >
       <span
         ref={measureRef}
@@ -104,15 +113,7 @@ function SongMarquee({ text }: { text: string }) {
       </span>
 
       {shouldScroll ? (
-        <motion.div
-          className="flex w-max"
-          animate={{ x: ["0%", "-50%"] }}
-          transition={{
-            duration: 12,
-            repeat: Infinity,
-            ease: "linear",
-          }}
-        >
+        <div className="song-marquee-track--active flex w-max">
           <span className="pr-8 text-sm font-medium whitespace-nowrap text-white">
             {text}
           </span>
@@ -122,7 +123,7 @@ function SongMarquee({ text }: { text: string }) {
           >
             {text}
           </span>
-        </motion.div>
+        </div>
       ) : (
         <p className="truncate text-sm font-medium text-white">{text}</p>
       )}
