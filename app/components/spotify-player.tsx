@@ -14,7 +14,7 @@ import {
   SkipBack,
   SkipForwardIcon,
 } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const SONG = {
   title: "Tell Me",
@@ -27,9 +27,18 @@ const SONG = {
 };
 
 const PILL_ART_SIZE = 48;
-/** Half of pill size → true circle at 48×48 during layout morph */
 const PILL_ART_RADIUS = PILL_ART_SIZE / 2;
 const EXPANDED_ART_RADIUS = 16;
+
+// Pill geometry — must match the pill's padding exactly so the
+// absolutely-positioned image lines up with where it used to sit.
+const PILL_PADDING_X = 8; // px-2  → 0.5rem = 8px
+const PILL_PADDING_Y = 8; // py-2  → 0.5rem = 8px
+const PILL_IMAGE_GAP = 8; // gap between image and text area
+
+// Total left-padding the pill panel needs in collapsed mode so the
+// text starts after the floating image:  padding + image + gap
+const PILL_PANEL_PL = PILL_PADDING_X + PILL_ART_SIZE + PILL_IMAGE_GAP; // 64 px
 
 const MARQUEE_MASK =
   "mask-[linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)]";
@@ -47,7 +56,7 @@ const ENTER_REVEAL: Transition = {
 };
 
 const EXIT_FAST: Transition = {
-  duration: 0.3,
+  duration: 0.2,
   ease: [0.4, 0, 1, 1],
 };
 
@@ -73,36 +82,27 @@ function SpotifyIcon({ className }: { className?: string }) {
 function SongMarquee({ text }: { text: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
-  /** Start true so CSS scroll runs on first paint; layout effect turns off if text fits */
-  const [shouldScroll, setShouldScroll] = useState(true);
+  const [shouldScroll, setShouldScroll] = useState(false);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const container = containerRef.current;
     const measure = measureRef.current;
     if (!container || !measure) return;
 
     const check = () => {
-      const containerWidth = container.clientWidth;
-      if (containerWidth === 0) return;
-      setShouldScroll(measure.scrollWidth > containerWidth);
+      setShouldScroll(measure.offsetWidth > container.clientWidth);
     };
 
     check();
-    requestAnimationFrame(check);
-
     const observer = new ResizeObserver(check);
     observer.observe(container);
-    observer.observe(measure);
-
-    void document.fonts?.ready.then(check);
-
     return () => observer.disconnect();
   }, [text]);
 
   return (
     <div
       ref={containerRef}
-      className={`relative isolate h-5 w-full overflow-hidden ${MARQUEE_MASK}`}
+      className={`relative h-5 w-full overflow-hidden ${MARQUEE_MASK}`}
     >
       <span
         ref={measureRef}
@@ -113,7 +113,11 @@ function SongMarquee({ text }: { text: string }) {
       </span>
 
       {shouldScroll ? (
-        <div className="song-marquee-track--active flex w-max">
+        <motion.div
+          className="flex w-max"
+          animate={{ x: ["0%", "-50%"] }}
+          transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
+        >
           <span className="pr-8 text-sm font-medium whitespace-nowrap text-white">
             {text}
           </span>
@@ -123,7 +127,7 @@ function SongMarquee({ text }: { text: string }) {
           >
             {text}
           </span>
-        </div>
+        </motion.div>
       ) : (
         <p className="truncate text-sm font-medium text-white">{text}</p>
       )}
@@ -260,13 +264,14 @@ export function SpotifyPlayer() {
 
   return (
     <LayoutGroup id="spotify-player">
+      {/* ── Backdrop ──────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {expanded && (
           <motion.button
             key="backdrop"
             type="button"
             aria-label="Close player"
-            className="fixed inset-0 z-40 cursor-default bg-white"
+            className="fixed inset-0 z-40 cursor-default "
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -276,73 +281,114 @@ export function SpotifyPlayer() {
         )}
       </AnimatePresence>
 
+      {/*
+        ── Outer container ────────────────────────────────────────────────────
+        position:relative is critical — the album art is position:absolute
+        in pill mode and must be positioned relative to this container.
+      */}
       <div
         className={`relative z-50 flex flex-col items-center ${
           expanded ? "w-[min(360px,calc(100vw-2rem))]" : "w-[230px]"
         }`}
       >
-        <AnimatePresence>
+        {/*
+          ── ALBUM ART — single element, always rendered ─────────────────────
+
+          THE FIX: One element that lives as a SIBLING of player-panel, never
+          a child. This breaks the nested-layoutId problem where player-panel's
+          own layout animation was corrupting the coordinate space used by the
+          old layoutId="album-art" that was nested inside it.
+
+          • Pill mode  → position:absolute, z-10, overlays the left side of
+                         the red pill. The pill itself gets pl-[64px] to leave
+                         the exact same visual gap the image used to occupy.
+
+          • Expanded   → position:relative, flows as a normal flex-column item
+                         above the text and the card.
+
+          • `layout`   → Framer Motion measures the bounding rect in both states
+                         and smoothly springs between them — no flash possible
+                         because there is only ONE element (no two-instance
+                         layoutId conflict).
+        */}
+        <motion.div
+          layout
+          transition={LAYOUT_TRANSITION}
+          className="overflow-hidden"
+          style={
+            expanded
+              ? {
+                  // ── EXPANDED: normal flow, full width minus horizontal padding
+                  position: "relative",
+                  zIndex: "auto",
+                  borderRadius: EXPANDED_ART_RADIUS,
+                  width: "calc(100% - 2rem)", // matches px-4 on each side
+                  aspectRatio: "1 / 1",
+                  margin: `0.5rem 1rem 0`,
+                }
+              : {
+                  // ── PILL: absolute, sits on top of the pill's left side
+                  position: "absolute",
+                  zIndex: 10,
+                  borderRadius: PILL_ART_RADIUS,
+                  width: PILL_ART_SIZE,
+                  height: PILL_ART_SIZE,
+                  top: PILL_PADDING_Y, // lines up with pill's py-2
+                  left: PILL_PADDING_X, // lines up with pill's px-2
+                }
+          }
+        >
+          <Image
+            src={SONG.art}
+            alt={`${SONG.title} album art`}
+            fill
+            className="object-cover"
+            sizes="(max-width: 360px) 90vw, 300px"
+            priority
+          />
+        </motion.div>
+
+        {/*
+          ── SONG TITLE + ARTIST ────────────────────────────────────────────
+          Fades in on expand. Completely separate from the album art so the
+          image morph is never affected by this opacity animation.
+        */}
+        <AnimatePresence mode="popLayout">
           {expanded && (
             <motion.div
-              key="hero"
-              className="w-full px-4 pt-2 pb-3 text-center"
-              initial={{ opacity: 0, y: -24, filter: "blur(12px)" }}
+              key="hero-text"
+              className="w-full px-4 pb-3 pt-3 text-center"
+              initial={{ opacity: 0, y: -12, filter: "blur(8px)" }}
               animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-              exit={{
-                opacity: 0,
-                y: -8,
-                filter: "blur(0px)",
-                transition: EXIT_FAST,
-              }}
-              transition={ENTER_REVEAL}
+              exit={{ opacity: 0, transition: { duration: 0 } }}
+              transition={{ ...ENTER_REVEAL, delay: 0.08 }}
             >
-              <motion.div
-                layoutId="album-art"
-                transition={LAYOUT_TRANSITION}
-                style={{ borderRadius: EXPANDED_ART_RADIUS }}
-                className="relative mx-auto aspect-square w-full max-w-[800px] overflow-hidden shadow-lg"
-              >
-                <Image
-                  src={SONG.art}
-                  alt={`${SONG.title} album art`}
-                  fill
-                  className="object-cover"
-                  sizes="(max-width: 360px) 90vw, 300px"
-                  priority
-                />
-              </motion.div>
-
-              <motion.h2
-                className="mt-4 text-2xl font-bold text-zinc-900"
-                initial={{ opacity: 0, y: -10, filter: "blur(8px)" }}
-                animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                transition={{ ...ENTER_REVEAL, delay: 0.05 }}
-              >
-                {SONG.title}
-              </motion.h2>
-              <motion.p
-                className="mt-1 text-sm text-zinc-600"
-                initial={{ opacity: 0, y: -8, filter: "blur(8px)" }}
-                animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                transition={{ ...ENTER_REVEAL, delay: 0.1 }}
-              >
-                {SONG.artists}
-              </motion.p>
+              <h2 className="text-2xl font-bold text-zinc-900">{SONG.title}</h2>
+              <p className="mt-1 text-sm text-zinc-600">{SONG.artists}</p>
             </motion.div>
           )}
         </AnimatePresence>
 
+        {/*
+          ── PLAYER PANEL ───────────────────────────────────────────────────
+          Morphs from pill → card via layoutId="player-panel".
+
+          Pill mode: pl-[64px] = PILL_PADDING_X(8) + image(48) + gap(8) = 64px
+          This reserves the exact space that the absolutely-positioned image
+          visually occupies, so text + controls start at the right position.
+
+          The album art is NOT inside this element anymore — that was the
+          root cause of the flash.
+        */}
         <motion.div
           layoutId="player-panel"
           layout
           transition={LAYOUT_TRANSITION}
-          style={{
-            borderRadius: expanded ? 16 : 9999,
-          }}
+          style={{ borderRadius: expanded ? 16 : 9999 }}
           className={`w-full bg-red-900 ${
             expanded
               ? "p-4 shadow-lg shadow-black/15"
-              : "cursor-pointer px-2 py-2"
+              : `cursor-pointer py-2 pr-2 pl-[${PILL_PANEL_PL}px]`
           }`}
           onClick={() => {
             if (!expanded) setExpanded(true);
@@ -368,33 +414,21 @@ export function SpotifyPlayer() {
                 <ExpandedControls progress={progress} />
               </motion.div>
             ) : (
+              /*
+                Pill content: image is gone from here.
+                Only the marquee text and transport controls remain.
+                The absolutely-positioned image above provides the visual.
+              */
               <motion.div
                 key="pill-content"
-                className="flex items-center gap-2"
+                className="flex flex-col justify-center gap-0.5"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={EXIT_FAST}
               >
-                <motion.div
-                  layoutId="album-art"
-                  transition={LAYOUT_TRANSITION}
-                  style={{ borderRadius: PILL_ART_RADIUS }}
-                  className="relative h-12 w-12 shrink-0 overflow-hidden"
-                >
-                  <Image
-                    src={SONG.art}
-                    alt={`${SONG.title} album art`}
-                    width={PILL_ART_SIZE}
-                    height={PILL_ART_SIZE}
-                    className="h-12 w-12 object-cover"
-                  />
-                </motion.div>
-
-                <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-                  <SongMarquee text={SONG.marquee} />
-                  <PillControls />
-                </div>
+                <SongMarquee text={SONG.marquee} />
+                <PillControls />
               </motion.div>
             )}
           </AnimatePresence>
